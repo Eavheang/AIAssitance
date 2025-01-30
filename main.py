@@ -7,7 +7,13 @@ import subprocess
 import logging
 import pyttsx3
 import random
-
+import webbrowser
+import datetime
+import winsound
+import threading
+import dateparser  # For parsing natural language time expressions
+import requests
+from geopy.geocoders import Nominatim
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -48,6 +54,23 @@ FOLLOW_UP_RESPONSES = [
     "Anything else on your mind?",
 ]
 
+# Global list to store alarms and timers
+alarms = []
+timers = []
+
+# Function to get the current location
+def get_location():
+    try:
+        geolocator = Nominatim(user_agent="weatherApp")
+        location = geolocator.geocode("Phnom Penh, Cambodia")
+        if location:
+            return location.latitude, location.longitude
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"Error fetching location: {e}")
+        return None
+
 def listen_for_activation():
     with sr.Microphone() as source:
         print("Listening for activation phrase...")
@@ -65,7 +88,6 @@ def listen_for_activation():
     return False
 
 
-# Function to listen for a query
 def listen_for_query():
     with sr.Microphone() as source:
         print("Listening for query...")
@@ -82,14 +104,17 @@ def listen_for_query():
     return None
 
 
-# Function to generate response using Gemini
 def generate_response(query):
     response = model.generate_content(query)
     return response.text
 
 
-# Function to speak the response using pyttsx3
 def speak_response(text):
+    try:
+        engine.endLoop()  # Stop any ongoing speech synthesis
+    except:
+        pass  # Ignore errors if the loop isn't running
+
     try:
         engine.say(text)
         engine.runAndWait()
@@ -97,6 +122,81 @@ def speak_response(text):
         print(f"Error during speech generation: {e}")
 
 
+def play_alarm():
+    frequency = 2500  # Frequency of the alarm sound (in Hz)
+    duration = 2000  # Duration of the alarm sound (in milliseconds)
+    winsound.Beep(frequency, duration)  # Play the alarm sound
+
+
+def set_alarm(alarm_time):
+    alarms.append(alarm_time)
+    return f"Alarm set for {alarm_time.strftime('%I:%M %p')}."
+
+
+def set_timer(duration):
+    end_time = datetime.datetime.now() + datetime.timedelta(seconds=duration)
+    timers.append(end_time)
+    return f"Timer set for {duration} seconds."
+
+
+def check_alarms_and_timers():
+    while True:
+        now = datetime.datetime.now()
+        print(f"Current time: {now.strftime('%I:%M %p')}")  # Print current time for debugging
+
+        # Check alarms
+        for alarm in alarms[:]:  # Iterate over a copy of the list to safely remove elements
+            print(f"Checking alarm for: {alarm.strftime('%I:%M %p')}")  # Print alarm time for debugging
+            if now >= alarm:
+                print("Wake up!")
+                play_alarm()
+                alarms.remove(alarm)
+
+        # Check timers
+        for timer in timers[:]:  # Iterate over a copy of the list to safely remove elements
+            if now >= timer:
+                print("Timer is up!")
+                speak_response("Your timer is up!")  # Add voice response
+                play_alarm()
+                timers.remove(timer)  # Remove expired timer
+
+        time.sleep(1)  # Check every second
+
+
+# Function to fetch weather based on location
+def get_weather():
+    # Get the current latitude and longitude
+    location = get_location()
+    if location:
+        lat, lon = location
+    else:
+        return "Sorry, couldn't retrieve your location."
+
+    # OpenWeatherMap API key from environment
+    API_KEY = os.getenv("OPENWEATHER_API_KEY")
+    if not API_KEY:
+        raise ValueError("Please set the OPENWEATHER_API_KEY in the .env file.")
+
+    # OpenWeatherMap API endpoint for current weather data using coordinates
+    url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if data["cod"] == 200:
+            # Extract weather data
+            main = data["main"]
+            weather = data["weather"][0]
+            temperature = main["temp"]
+            description = weather["description"]
+            city_name = data["name"]  # Using the name returned from OpenWeatherMap
+            return f"The current weather in {city_name} is {temperature}°C with {description}."
+        else:
+            return "Sorry, I couldn't fetch the weather data."
+    except Exception as e:
+        logging.error(f"Error fetching weather data: {e}")
+        return "Sorry, there was an error fetching the weather."
 def open_application(app_name):
     try:
         # Map common application names to their respective commands
@@ -125,8 +225,40 @@ def open_application(app_name):
         return f"An error occurred while trying to open {app_name}: {e}"
 
 
-# Main loop
+def play_music(song_name):
+    try:
+        # Construct the YouTube search URL
+        youtube_url = f"https://www.youtube.com/results?search_query={song_name.replace(' ', '+')}"
+
+        # Open Microsoft Edge with the YouTube search URL
+        edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        webbrowser.register('edge', None, webbrowser.BackgroundBrowser(edge_path))
+        webbrowser.get('edge').open(youtube_url)
+
+        logging.info(f"Searching for {song_name} on YouTube...")
+        return f"Playing {song_name} on YouTube..."
+    except Exception as e:
+        logging.error(f"An error occurred while trying to play music: {e}")
+        return f"An error occurred while trying to play music: {e}"
+
+
+def parse_time(query):
+    try:
+        # Use dateparser to parse natural language time expressions
+        parsed_time = dateparser.parse(query, settings={'PREFER_DATES_FROM': 'future'})
+        if parsed_time:
+            return parsed_time
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"Error parsing time: {e}")
+        return None
+
+
 def main():
+    # Start the alarm/timer checker in a separate thread
+    threading.Thread(target=check_alarms_and_timers, daemon=True).start()
+
     while True:
         if listen_for_activation():
             # Respond with a natural activation phrase
@@ -144,6 +276,38 @@ def main():
                     # Extract the application name from the query
                     app_name = query.lower().replace("open", "").strip()
                     response_text = open_application(app_name)
+                elif "play" in query.lower():
+                    # Extract the song name from the query
+                    song_name = query.lower().replace("play", "").strip()
+                    response_text = play_music(song_name)
+                elif "set alarm" in query.lower():
+                    # Extract the time from the query
+                    time_str = query.lower().replace("set alarm", "").strip()
+                    alarm_time = parse_time(time_str)
+                    if alarm_time:
+                        response_text = set_alarm(alarm_time)
+                    else:
+                        response_text = "Sorry, I didn't understand the time. Please try again."
+                elif "set timer" in query.lower():
+                    # Extract the duration and unit from the query
+                    query_lower = query.lower().replace("set timer for", "").strip()
+                    words = query_lower.split()
+                    try:
+                        # Get the number from the words
+                        duration = int(words[0])  # First word should be the number
+                        unit = words[1] if len(words) > 1 else "seconds"  # Default to seconds if no unit is provided
+
+                        # Convert to seconds
+                        if "minute" in unit:
+                            duration *= 60
+                        elif "hour" in unit:
+                            duration *= 3600
+
+                        response_text = set_timer(duration)
+                    except (ValueError, IndexError):
+                        response_text = "Sorry, I didn't understand the duration. Please try again."
+                elif "weather" in query.lower():
+                    response_text = get_weather()
                 else:
                     response_text = generate_response(query)
 
