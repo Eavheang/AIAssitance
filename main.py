@@ -1,19 +1,20 @@
+import os, time, subprocess, logging, random, webbrowser, datetime, threading
 import speech_recognition as sr
 import google.generativeai as genai
-from dotenv import load_dotenv
-import os
-import time
-import subprocess
-import logging
 import pyttsx3
-import random
-import webbrowser
-import datetime
 import winsound
-import threading
-import dateparser  # For parsing natural language time expressions
+import dateparser
 import requests
+from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
+from PIL import Image, ImageDraw
+import pystray
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.edge.service import Service
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -57,6 +58,29 @@ FOLLOW_UP_RESPONSES = [
 # Global list to store alarms and timers
 alarms = []
 timers = []
+
+# Function to create a system tray icon
+def create_system_tray_icon():
+    # Create an image for the system tray icon
+    image = Image.new('RGB', (64, 64), color='black')
+    draw = ImageDraw.Draw(image)
+    draw.text((10, 10), "Bob", fill='white')
+
+    # Define the menu for the system tray icon
+    menu = pystray.Menu(
+        pystray.MenuItem("Exit", on_exit)
+    )
+
+    # Create the system tray icon
+    icon = pystray.Icon("Bob", image, "Bob Assistant", menu)
+
+    # Run the icon in the background
+    icon.run()
+
+# Function to handle exit from the system tray
+def on_exit(icon, item):
+    icon.stop()
+    os._exit(0)
 
 # Function to get the current location
 def get_location():
@@ -142,7 +166,7 @@ def set_timer(duration):
 def check_alarms_and_timers():
     while True:
         now = datetime.datetime.now()
-        print(f"Current time: {now.strftime('%I:%M %p')}")  # Print current time for debugging
+        # print(f"Current time: {now.strftime('%I:%M %p')}")  # Print current time for debugging
 
         # Check alarms
         for alarm in alarms[:]:  # Iterate over a copy of the list to safely remove elements
@@ -204,8 +228,6 @@ def open_application(app_name):
             "microsoft edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             "notepad": "notepad",
             "calculator": "calc",
-            "chrome": "chrome",
-            "firefox": "firefox",
             "vs code": r'C:\Users\oenge\AppData\Local\Programs\Microsoft VS Code\Code.exe',
             # Add more applications as needed
         }
@@ -225,18 +247,38 @@ def open_application(app_name):
         return f"An error occurred while trying to open {app_name}: {e}"
 
 
+# Global WebDriver instance
+driver = None
+
 def play_music(song_name):
+    global driver
+
     try:
-        # Construct the YouTube search URL
-        youtube_url = f"https://www.youtube.com/results?search_query={song_name.replace(' ', '+')}"
+        # Check if the WebDriver instance already exists
+        if driver is None:
+            # Setup Edge WebDriver
+            options = webdriver.EdgeOptions()
+            options.add_argument("--start-maximized")  # Open browser in full screen
+            driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
 
-        # Open Microsoft Edge with the YouTube search URL
-        edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-        webbrowser.register('edge', None, webbrowser.BackgroundBrowser(edge_path))
-        webbrowser.get('edge').open(youtube_url)
+        # Open YouTube
+        driver.get("https://www.youtube.com")
 
-        logging.info(f"Searching for {song_name} on YouTube...")
+        # Find the search bar and enter the song name
+        search_box = driver.find_element(By.NAME, "search_query")
+        search_box.send_keys(song_name)
+        search_box.send_keys(Keys.RETURN)
+
+        # Wait for search results to load
+        time.sleep(3)
+
+        # Click the first video result
+        first_video = driver.find_elements(By.ID, "video-title")[0]
+        first_video.click()
+
+        logging.info(f"Playing {song_name} on YouTube...")
         return f"Playing {song_name} on YouTube..."
+
     except Exception as e:
         logging.error(f"An error occurred while trying to play music: {e}")
         return f"An error occurred while trying to play music: {e}"
